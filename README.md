@@ -49,15 +49,48 @@ llm-deployment-demo/
 
 ---
 
-## Quick Start — Local Run
+## Quick Start
 
-**Requirements:** Docker + NVIDIA Container Toolkit installed, CUDA-capable GPU.
+### Step 1 — Launch a g4dn.xlarge Instance on AWS
+
+Provision an EC2 GPU instance with the right AMI, security group, and storage. Full steps here:
+
+**[g4-instance-setup.md](./g4-instance-setup.md)**
+
+---
+
+### Step 2 — SSH into the Instance
+
+Once the instance is running, copy the Public IPv4 address from the AWS Console and connect:
 
 ```bash
-# Build
-docker build -t vllm-nexus .
+ssh -i your-key.pem ubuntu@<ec2-public-ip>
+```
 
-# Run
+---
+
+### Step 3 — Clone the Repo
+
+```bash
+git clone https://github.com/vishakhasadhwani/llm-deployment-demo.git
+cd llm-deployment-demo
+```
+
+---
+
+### Step 4 — Build the Docker Image
+
+```bash
+docker build -t vllm-nexus .
+```
+
+> First build takes 10–20 minutes. Subsequent builds use the layer cache.
+
+---
+
+### Step 5 — Run the Container
+
+```bash
 docker run --gpus all \
     -p 80:80 \
     -p 8000:8000 \
@@ -66,9 +99,7 @@ docker run --gpus all \
     vllm-nexus
 ```
 
-Open `http://localhost`. The UI shows **SERVER OFFLINE** for 1–3 minutes while the model loads — hit **REFRESH** in the sidebar once ready.
-
-**Run detached:**
+**Run in background:**
 
 ```bash
 docker run -d --gpus all \
@@ -79,17 +110,19 @@ docker run -d --gpus all \
     --name vllm-nexus \
     vllm-nexus
 
-docker logs -f vllm-nexus   # watch logs
-docker stop vllm-nexus && docker rm vllm-nexus
+docker logs -f vllm-nexus                        # watch logs
+docker stop vllm-nexus && docker rm vllm-nexus   # stop and clean up
 ```
 
 ---
 
-## Cloud Deployment — AWS EC2
+### Step 6 — Open the UI
 
-For running on a remote GPU instance (g4dn.xlarge / Tesla T4), see the full provisioning guide:
+```
+http://<your-ec2-public-ip>
+```
 
-**[g4-instance-setup.md](./g4-instance-setup.md)**
+The UI shows **SERVER OFFLINE** for 1–3 minutes while the model loads — hit **REFRESH** in the sidebar once ready.
 
 ---
 
