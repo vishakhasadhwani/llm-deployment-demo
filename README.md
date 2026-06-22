@@ -31,28 +31,6 @@ Both services run inside a **single Docker container**. The entrypoint script st
 
 ## Key Component Workflow
 
-```mermaid
-flowchart TD
-    HF[("HuggingFace Hub\nModel Weights")]
-    TOKEN["HF Access Token\n(gated models only)"]
-    CUDA["NVIDIA CUDA Base Image\ncuda:12.2.0-runtime-ubuntu22.04"]
-    DEPS["Dependencies\nPyTorch · vLLM · Streamlit"]
-    DOCKER["Docker Image\nvllm-nexus"]
-    ENTRY["Entrypoint Script\nstarts vLLM → waits for /health → starts Streamlit"]
-    VLLM["vLLM Inference Server\nOpenAI-compatible API · Port 8000"]
-    UI["Streamlit Chat UI\nPort 80"]
-    USER["Browser / User"]
-
-    TOKEN -->|"HUGGING_FACE_HUB_TOKEN"| HF
-    HF -->|"pulls weights at startup\ncached to ~/.cache/huggingface"| VLLM
-    CUDA --> DEPS --> DOCKER
-    DOCKER --> ENTRY
-    ENTRY --> VLLM
-    ENTRY --> UI
-    VLLM -->|"/v1/chat/completions\nstreaming tokens"| UI
-    UI --> USER
-```
-
 ---
 
 ## Project Structure
