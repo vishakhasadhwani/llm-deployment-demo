@@ -1,6 +1,6 @@
-# AWS EC2 g4dn.xlarge — Setup Guide
+# AWS EC2 g4dn.xlarge — Instance Setup Guide
 
-Complete steps to provision and configure a GPU instance for running vLLM Nexus.
+Full steps to launch and configure a GPU instance on AWS for running this project. For local deployment or project overview, see [README.md](./README.md).
 
 ---
 
@@ -16,25 +16,47 @@ Complete steps to provision and configure a GPU instance for running vLLM Nexus.
 | OS | Ubuntu 22.04 LTS |
 | Estimated cost | ~$0.52/hr on-demand |
 
-**Security Group — open these ports:**
+---
 
-| Port | Purpose |
-|---|---|
-| 22 | SSH |
-| 80 | Streamlit UI |
-| 8000 | vLLM API |
+## Step 1 — Launch the EC2 Instance
+
+1. Go to **AWS Console → EC2 → Launch Instance**
+2. **Name:** `vllm-nexus` (or any name)
+3. **AMI:** Ubuntu Server 22.04 LTS (64-bit x86)
+4. **Instance type:** `g4dn.xlarge`
+   - Use the search bar and filter by GPU instances if it doesn't appear in the default list
+5. **Key pair:** Create a new key pair or select an existing one — you'll need this to SSH in
+6. **Network settings → Security Group:** Add the following inbound rules:
+
+   | Type | Port | Source |
+   |---|---|---|
+   | SSH | 22 | My IP |
+   | Custom TCP | 80 | 0.0.0.0/0 |
+   | Custom TCP | 8000 | 0.0.0.0/0 |
+
+7. **Configure storage:** Set root volume to **100 GB gp3**
+   - Models range from 2–15 GB and Docker images add up — 100 GB gives comfortable headroom
+8. Click **Launch Instance**
+
+Once the instance is running, copy the **Public IPv4 address** from the instance details page.
 
 ---
 
-## Step 1 — SSH into the Instance
+## Step 2 — SSH into the Instance
 
 ```bash
 ssh -i your-key.pem ubuntu@<ec2-public-ip>
 ```
 
+If you get a permissions error on the key file:
+
+```bash
+chmod 400 your-key.pem
+```
+
 ---
 
-## Step 2 — Verify GPU Driver
+## Step 3 — Verify GPU Driver
 
 ```bash
 nvidia-smi
@@ -51,7 +73,7 @@ After reboot, SSH back in and run `nvidia-smi` again to confirm.
 
 ---
 
-## Step 3 — Install Docker
+## Step 4 — Install Docker
 
 ```bash
 sudo dpkg --configure -a
@@ -62,7 +84,7 @@ sudo usermod -aG docker $USER
 newgrp docker
 ```
 
-Verify Docker is running:
+Verify:
 
 ```bash
 docker ps
@@ -78,7 +100,7 @@ sudo systemctl status docker
 
 ---
 
-## Step 4 — Install NVIDIA Container Toolkit
+## Step 5 — Install NVIDIA Container Toolkit
 
 Allows Docker containers to access the GPU.
 
@@ -102,24 +124,11 @@ Test GPU access from inside Docker:
 docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
 ```
 
-The T4 should appear inside the container output.
+The T4 should appear in the container output.
 
 ---
 
-## Step 5 — Copy Project Files
-
-```bash
-mkdir -p ~/vllm-chat-app
-cd ~/vllm-chat-app
-```
-
-Copy these files into the directory:
-- `app.py`
-- `Dockerfile`
-- `entrypoint.sh`
-- `requirements.txt`
-
-Or clone directly from GitHub:
+## Step 6 — Clone the Repo
 
 ```bash
 git clone https://github.com/vishakhasadhwani/llm-deployment-demo.git
@@ -128,7 +137,7 @@ cd llm-deployment-demo
 
 ---
 
-## Step 6 — Create .dockerignore
+## Step 7 — Create .dockerignore
 
 ```bash
 cat > .dockerignore << 'EOF'
@@ -141,17 +150,17 @@ EOF
 
 ---
 
-## Step 7 — Build the Docker Image
+## Step 8 — Build the Docker Image
 
 ```bash
 docker build -t vllm-nexus .
 ```
 
-> First build takes 10–20 minutes (downloads PyTorch ~800 MB + vLLM ~200 MB). Subsequent builds use layer cache.
+> First build takes 10–20 minutes (downloads PyTorch ~800 MB + vLLM ~200 MB). Subsequent builds use the layer cache.
 
 ---
 
-## Step 8 — Run the Container
+## Step 9 — Run the Container
 
 ```bash
 docker run --gpus all \
@@ -183,13 +192,12 @@ docker logs -f vllm-nexus
 Stop and remove:
 
 ```bash
-docker stop vllm-nexus
-docker rm vllm-nexus
+docker stop vllm-nexus && docker rm vllm-nexus
 ```
 
 ---
 
-## Step 9 — Access the UI
+## Step 10 — Access the UI
 
 Open your browser and go to:
 
@@ -203,46 +211,15 @@ The UI shows **SERVER OFFLINE** for the first 1–3 minutes while the model load
 
 ## Disk Space Management
 
-Models and Docker images consume significant disk. Clean up when needed:
-
 ```bash
-# Check disk usage
-df -h
-
-# Check model cache size
-du -sh ~/.cache/huggingface/hub/*
-
-# Remove unused Docker images and containers
-docker system prune -af
-
-# Clear pip cache
-pip cache purge
+df -h                                    # check disk usage
+du -sh ~/.cache/huggingface/hub/*        # check model cache size
+docker system prune -af                  # remove unused images and containers
+pip cache purge                          # clear pip cache
 ```
 
 ---
 
-## Environment Variables
+## Stopping the Instance
 
-| Variable | Default | Description |
-|---|---|---|
-| `MODEL_ID` | `Qwen/Qwen2-1.5B-Instruct` | HuggingFace model ID |
-| `GPU_UTIL` | `0.85` | Fraction of GPU VRAM to use |
-| `MAX_MODEL_LEN` | `2048` | Max context length in tokens |
-| `VLLM_HOST` | `http://localhost:8000` | vLLM server URL (used by Streamlit) |
-
----
-
-## Supported Models (Tesla T4 — 16 GB VRAM)
-
-| Model | HuggingFace ID | VRAM | Quality |
-|---|---|---|---|
-| Qwen2 1.5B Instruct | `Qwen/Qwen2-1.5B-Instruct` | ~3 GB | Good |
-| TinyLlama 1.1B Chat | `TinyLlama/TinyLlama-1.1B-Chat-v1.0` | ~2 GB | Basic |
-| Gemma 2B Instruct | `google/gemma-2b-it` | ~5 GB | Good |
-| Phi-3 Mini Instruct | `microsoft/Phi-3-mini-4k-instruct` | ~8 GB | Very good |
-
-Switch models by changing `MODEL_ID`:
-
-```bash
--e MODEL_ID=microsoft/Phi-3-mini-4k-instruct
-```
+When not in use, **stop** (not terminate) the instance from the AWS Console to avoid ongoing charges. Your EBS volume and cached models are preserved when stopped.

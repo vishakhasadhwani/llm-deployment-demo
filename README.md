@@ -1,158 +1,107 @@
-# ⚡ vLLM Nexus
+# Local Qwen Deployment on vLLM
 
-A self-hosted LLM chat interface powered by [vLLM](https://github.com/vllm-project/vllm) and [Streamlit](https://streamlit.io), designed to run on an AWS EC2 GPU instance (Tesla T4 / g4dn.xlarge).
+Run a private, self-hosted LLM chat interface on your own GPU — no API keys, no per-token costs, no data leaving your machine. This project deploys **Qwen2-1.5B-Instruct** (or any compatible HuggingFace model) using **vLLM** as the inference engine and **Streamlit** as the chat frontend, packaged in a single Docker container.
+
+---
+
+## Self-Hosted Model vs API-Deployed Model
+
+| | Self-Hosted (this project) | API-Based (OpenAI, Anthropic) |
+|---|---|---|
+| Cost | One-time GPU cost | Per-token billing |
+| Privacy | Data stays on your machine | Data sent to third party |
+| Control | Full — model, params, context length | Limited to what the API exposes |
+| Setup | Requires GPU + Docker | Just an API key |
+| Best for | Private data, cost at scale, learning | Quick prototyping, production apps |
 
 ---
 
 ## Architecture
 
 ```
-Browser → Port 80 (Streamlit UI) → Port 8000 (vLLM OpenAI-compatible API) → Tesla T4 GPU
+Browser
+  └── Port 80  →  Streamlit UI (app.py)
+                      └── Port 8000  →  vLLM OpenAI-compatible API
+                                            └── NVIDIA GPU (Tesla T4 / local)
 ```
 
-Both the vLLM inference server and the Streamlit frontend run inside a single Docker container. The entrypoint script starts vLLM first, waits for it to be healthy, then launches Streamlit.
+Both services run inside a **single Docker container**. The entrypoint script starts vLLM first, polls `/health` until the model is loaded, then launches Streamlit.
 
 ---
 
-## Requirements
+## Key Component Workflow
 
-### Hardware
-- AWS EC2 instance: **g4dn.xlarge** (or any instance with an NVIDIA Tesla T4)
-- Storage: **100 GB** EBS volume (models can be 2–15 GB)
-- Ports open in Security Group: **80** (HTTP) and **8000** (vLLM API)
+### 1. Model Download from HuggingFace
 
-### Software
-- Ubuntu 22.04 / 24.04
-- NVIDIA Driver **535+** (CUDA 12.2+)
-- Docker
-- NVIDIA Container Toolkit
+vLLM pulls the model weights directly from [HuggingFace Hub](https://huggingface.co) at container startup using the `MODEL_ID` environment variable. Models are cached at `~/.cache/huggingface` and mounted into the container so they are not re-downloaded on restart.
+
+```bash
+-e MODEL_ID=Qwen/Qwen2-1.5B-Instruct \
+-v ~/.cache/huggingface:/root/.cache/huggingface \
+```
+
+### 2. HuggingFace Token (for gated models)
+
+Public models like Qwen2 and TinyLlama do not require a token. For gated models (e.g., Llama 3, Gemma), set your HF token:
+
+```bash
+-e HUGGING_FACE_HUB_TOKEN=hf_your_token_here
+```
+
+Generate a token at **huggingface.co → Settings → Access Tokens** (read permission is sufficient).
+
+### 3. Dockerfile — Build & Deployment
+
+The Dockerfile starts from the official NVIDIA CUDA runtime image, installs PyTorch (CUDA 12.1 build), then vLLM, Streamlit, and the remaining dependencies.
+
+```dockerfile
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+# installs PyTorch (cu121) + vLLM + Streamlit
+EXPOSE 8000 80
+ENTRYPOINT ["./entrypoint.sh"]
+```
+
+Build the image:
+
+```bash
+docker build -t vllm-nexus .
+```
+
+> First build takes 10–20 minutes (PyTorch ~800 MB + vLLM ~200 MB). Subsequent builds use the layer cache.
+
+### 4. Inference with Streamlit
+
+`app.py` connects to vLLM's OpenAI-compatible REST API at `http://localhost:8000`. It:
+- Polls `/health` to show server status in the sidebar
+- Lists available models from `/v1/models`
+- Streams responses from `/v1/chat/completions` token by token
+- Tracks request count, total tokens, and latency per request
 
 ---
 
 ## Project Structure
 
 ```
-vllm-chat-app/
-├── app.py              # Streamlit chat frontend
-├── entrypoint.sh       # Container startup script
-├── Dockerfile          # Docker image definition
-├── requirements.txt    # Python dependencies
+llm-deployment-demo/
+├── app.py                  # Streamlit chat frontend
+├── entrypoint.sh           # Starts vLLM then Streamlit
+├── Dockerfile              # CUDA + PyTorch + vLLM + Streamlit image
+├── requirements.txt        # Python dependencies
+├── g4-instance-setup.md    # AWS EC2 g4dn.xlarge provisioning guide
 └── README.md
 ```
 
 ---
 
-## Installation & Setup
+## Quick Start — Local Run
 
-### Step 1 — Verify GPU Driver
-
-SSH into your instance and confirm the GPU is visible:
+**Requirements:** Docker + NVIDIA Container Toolkit installed, CUDA-capable GPU.
 
 ```bash
-nvidia-smi
-```
-
-You should see the Tesla T4 listed with CUDA Version 12.2+. If not, install the driver:
-
-```bash
-sudo apt install -y nvidia-driver-535
-sudo reboot
-```
-
----
-
-### Step 2 — Install Docker
-
-```bash
-sudo dpkg --configure -a
-
-sudo apt install -y docker.io
-sudo systemctl start docker
-sudo systemctl enable docker
-sudo usermod -aG docker $USER
-newgrp docker
-```
-
-Verify Docker is running:
-
-```bash
-docker ps
-```
-
----
-
-### Step 3 — Install NVIDIA Container Toolkit
-
-This allows Docker containers to access the GPU:
-
-```bash
-curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
-  sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-
-curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
-  sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-  sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-
-sudo apt-get update
-sudo apt-get install -y nvidia-container-toolkit
-sudo nvidia-ctk runtime configure --runtime=docker
-sudo systemctl restart docker
-```
-
-Verify GPU is accessible from Docker:
-
-```bash
-docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
-```
-
----
-
-### Step 4 — Clone / Copy Project Files
-
-Make sure all project files are in the same directory:
-
-```bash
-mkdir -p ~/vllm-chat-app
-cd ~/vllm-chat-app
-
-# Place these files here:
-# app.py, Dockerfile, entrypoint.sh, requirements.txt
-ls
-```
-
----
-
-### Step 5 — Create .dockerignore
-
-Prevents large local folders from being sent to the Docker build context:
-
-```bash
-cat > .dockerignore << 'EOF'
-__pycache__
-*.pyc
-vllm-env
-.cache
-EOF
-```
-
----
-
-### Step 6 — Build the Docker Image
-
-```bash
-cd ~/vllm-chat-app
+# Build
 docker build -t vllm-nexus .
-```
 
-> This will take **10–20 minutes** on first build as it downloads PyTorch (~800 MB) and vLLM (~200 MB). Subsequent builds use the layer cache and are much faster.
-
----
-
-## Running the Application
-
-### Basic Run
-
-```bash
+# Run
 docker run --gpus all \
     -p 80:80 \
     -p 8000:8000 \
@@ -161,9 +110,9 @@ docker run --gpus all \
     vllm-nexus
 ```
 
-The `-v ~/.cache/huggingface` flag mounts your local model cache into the container so models are not re-downloaded on every restart.
+Open `http://localhost`. The UI shows **SERVER OFFLINE** for 1–3 minutes while the model loads — hit **REFRESH** in the sidebar once ready.
 
-### Run in Background (detached)
+**Run detached:**
 
 ```bash
 docker run -d --gpus all \
@@ -173,38 +122,24 @@ docker run -d --gpus all \
     -v ~/.cache/huggingface:/root/.cache/huggingface \
     --name vllm-nexus \
     vllm-nexus
-```
 
-Check logs:
-
-```bash
-docker logs -f vllm-nexus
-```
-
-Stop the container:
-
-```bash
-docker stop vllm-nexus
-docker rm vllm-nexus
+docker logs -f vllm-nexus   # watch logs
+docker stop vllm-nexus && docker rm vllm-nexus
 ```
 
 ---
 
-## Accessing the UI
+## Cloud Deployment — AWS EC2
 
-Once the container is running, open your browser and go to:
+For running on a remote GPU instance (g4dn.xlarge / Tesla T4), see the full provisioning guide:
 
-```
-http://<your-ec2-public-ip>
-```
-
-The Streamlit UI will show **SERVER OFFLINE** for the first 1–3 minutes while the model loads. Once vLLM is ready it will switch to **SERVER ONLINE** automatically (hit the Refresh button in the sidebar).
+**[g4-instance-setup.md](./g4-instance-setup.md)**
 
 ---
 
 ## Supported Models
 
-These models are confirmed to work on a Tesla T4 (16 GB VRAM) with this setup:
+Confirmed to work on Tesla T4 (16 GB VRAM):
 
 | Model | HuggingFace ID | VRAM | Quality |
 |---|---|---|---|
@@ -213,13 +148,10 @@ These models are confirmed to work on a Tesla T4 (16 GB VRAM) with this setup:
 | Gemma 2B Instruct | `google/gemma-2b-it` | ~5 GB | Good |
 | Phi-3 Mini Instruct | `microsoft/Phi-3-mini-4k-instruct` | ~8 GB | Very good |
 
-To switch models, change the `MODEL_ID` environment variable:
+Switch models by changing `MODEL_ID`:
 
 ```bash
-docker run --gpus all -p 80:80 -p 8000:8000 \
-    -e MODEL_ID=TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
-    -v ~/.cache/huggingface:/root/.cache/huggingface \
-    vllm-nexus
+-e MODEL_ID=microsoft/Phi-3-mini-4k-instruct
 ```
 
 ---
@@ -235,42 +167,19 @@ docker run --gpus all -p 80:80 -p 8000:8000 \
 
 ---
 
-## Disk Space Management
-
-Models and Docker images consume significant disk. Use these commands to free space when needed:
-
-```bash
-# Check disk usage
-df -h
-
-# Check model cache size
-du -sh ~/.cache/huggingface/hub/*
-
-# Remove unused Docker images and containers
-docker system prune -af
-
-# Clear pip cache
-pip cache purge
-```
-
----
-
 ## Troubleshooting
 
 **`could not select device driver "" with capabilities: [[gpu]]`**
-NVIDIA Container Toolkit is not installed. Follow Step 3 above.
+NVIDIA Container Toolkit is not installed or Docker wasn't restarted after install.
 
 **`CUDA out of memory`**
-The model is too large for available VRAM. Either reduce `MAX_MODEL_LEN` or switch to a smaller model.
+Model too large for available VRAM. Reduce `MAX_MODEL_LEN` or switch to a smaller model.
 
 **`ValueError: chat template not found`**
-The model doesn't have a built-in chat template. Switch to a model with `instruct` or `chat` in its name.
-
-**`ModuleNotFoundError: No module named 'pyairports'`**
-Rebuild the Docker image — `pyairports` is in `requirements.txt` and will be included.
+Use a model with `instruct` or `chat` in the name.
 
 **UI shows SERVER OFFLINE after startup**
-Wait 2–3 minutes for the model to fully load, then click **🔄 REFRESH** in the sidebar.
+Wait 2–3 minutes for the model to load, then click **REFRESH** in the sidebar.
 
 ---
 
